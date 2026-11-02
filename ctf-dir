@@ -1,0 +1,253 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+LAUNCH_VS=false
+PROJECT_NAME=""
+ARCHIVE_INPUT=""
+DOMAIN=""
+KEEP_ARCHIVE=false
+
+# Parse flags and arguments
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -vs|--vs)
+            LAUNCH_VS=true
+            shift
+            ;;
+        -keep|--keep|-k)
+            KEEP_ARCHIVE=true
+            shift
+            ;;
+        -d|--domain|-domain)
+            if [[ $# -lt 2 || "$2" == -* ]]; then
+                echo "Error: $1 requires a domain / genre name." >&2
+                exit 1
+            fi
+            DOMAIN="$2"
+            shift 2
+            ;;
+        -d=*|--domain=*|-domain=*)
+            DOMAIN="${1#*=}"
+            shift
+            ;;
+        -i|--import|--input)
+            if [[ $# -lt 2 || "$2" == -* ]]; then
+                echo "Error: $1 requires an archive file path." >&2
+                exit 1
+            fi
+            ARCHIVE_INPUT="$2"
+            shift 2
+            ;;
+        -i=*)
+            ARCHIVE_INPUT="${1#*=}"
+            shift
+            ;;
+        -h|--help)
+            echo "Usage: ctf-dir [-vs] [-i <archive>] [-keep] [-d <domain>] [PROJECT_NAME]"
+            echo ""
+            echo "Options:"
+            echo "  -i, --import <file>   Copy archive to /src and extract into /challenge"
+            echo "  -keep, --keep         Keep the original compressed archive (default deletes it)"
+            echo "  -d, --domain <genre>  Create challenge as subfolder inside domain/genre"
+            echo "  -vs, --vs             Launch VSCodium with the newly created workspace"
+            echo "  -h, --help            Show this help message"
+            exit 0
+            ;;
+        -*)
+            echo "Error: Unknown option: $1" >&2
+            echo "Run 'ctf-dir -h' for usage." >&2
+            exit 1
+            ;;
+        *)
+            if [[ -z "$PROJECT_NAME" ]]; then
+                PROJECT_NAME="$1"
+            else
+                echo "Warning: Ignoring extra argument: $1" >&2
+            fi
+            shift
+            ;;
+    esac
+done
+
+# Clean domain name if specified
+if [[ -n "$DOMAIN" ]]; then
+    DOMAIN="$(echo -e "${DOMAIN}" | sed -e 's/^[[:space:]/]*//' -e 's/[[:space:]/]*$//')"
+fi
+
+# Validate archive path if specified
+ARCHIVE_PATH=""
+if [[ -n "$ARCHIVE_INPUT" ]]; then
+    if [[ ! -f "$ARCHIVE_INPUT" ]]; then
+        echo "Error: File '$ARCHIVE_INPUT' does not exist or is not a regular file." >&2
+        exit 1
+    fi
+    ARCHIVE_PATH="$(realpath "$ARCHIVE_INPUT")"
+fi
+
+# If project name was not provided, prompt user (with archive basename as suggestion if available)
+if [[ -z "$PROJECT_NAME" ]]; then
+    DEFAULT_NAME=""
+    if [[ -n "$ARCHIVE_PATH" ]]; then
+        BASE_ARCHIVE="$(basename "$ARCHIVE_PATH")"
+        DEFAULT_NAME="${BASE_ARCHIVE%.*}"
+        DEFAULT_NAME="${DEFAULT_NAME%.tar}"
+    fi
+
+    if [[ -n "$DEFAULT_NAME" ]]; then
+        read -rp "Enter CTF project name [${DEFAULT_NAME}]: " PROJECT_NAME
+        PROJECT_NAME="${PROJECT_NAME:-$DEFAULT_NAME}"
+    else
+        read -rp "Enter CTF project name: " PROJECT_NAME
+    fi
+fi
+
+# Clean and trim project name
+PROJECT_NAME="$(echo -e "${PROJECT_NAME}" | tr -d '[:cntrl:]' | sed -e 's/^[[:space:]/]*//' -e 's/[[:space:]/]*$//')"
+
+if [[ -z "$PROJECT_NAME" ]]; then
+    echo "Error: Project name cannot be empty." >&2
+    exit 1
+fi
+
+# Determine target directory (with domain parent if specified)
+if [[ -n "$DOMAIN" ]]; then
+    DOMAIN_DIR="${PWD}/${DOMAIN}"
+    TARGET_DIR="${DOMAIN_DIR}/${PROJECT_NAME}"
+    mkdir -p "$DOMAIN_DIR"
+else
+    TARGET_DIR="${PWD}/${PROJECT_NAME}"
+fi
+
+# Workspace paths
+SRC_DIR="${TARGET_DIR}/src"
+CHALLENGE_DIR="${TARGET_DIR}/challenge"
+WRITEUP_DIR="${TARGET_DIR}/writeup"
+WRITEUP_ASSETS_DIR="${WRITEUP_DIR}/assets/images"
+README_FILE="${WRITEUP_DIR}/readme.md"
+FLAG_FILE="${TARGET_DIR}/flag.txt"
+
+# Create directories
+mkdir -p "$SRC_DIR"
+mkdir -p "$CHALLENGE_DIR"
+mkdir -p "$WRITEUP_ASSETS_DIR"
+
+# Initialize flag.txt
+if [[ ! -f "$FLAG_FILE" ]]; then
+    touch "$FLAG_FILE"
+fi
+
+# Initialize writeup readme if not already existing
+if [[ ! -f "$README_FILE" ]]; then
+    cat <<EOF > "$README_FILE"
+# ${PROJECT_NAME}
+
+## Overview
+- **Category:** ${DOMAIN:-}
+- **Points:** 
+- **Difficulty:** 
+
+## Description
+- 
+
+## Solution
+- 
+
+## Flag
+\`\`\`
+flag{}
+\`\`\`
+EOF
+fi
+
+# Process archive import if provided
+if [[ -n "$ARCHIVE_PATH" ]]; then
+    echo "Copying reference archive to ${SRC_DIR}..."
+    cp "$ARCHIVE_PATH" "$SRC_DIR/"
+
+    ARCHIVE_NAME="$(basename "$ARCHIVE_PATH")"
+    COPIED_ARCHIVE="${SRC_DIR}/${ARCHIVE_NAME}"
+
+    echo "Unpacking archive into ${CHALLENGE_DIR}..."
+    EXTRACTION_SUCCESS=true
+
+    case "${ARCHIVE_NAME,,}" in
+        *.zip)
+            if command -v unzip &>/dev/null; then
+                unzip -q -o "$COPIED_ARCHIVE" -d "$CHALLENGE_DIR"
+            elif command -v 7z &>/dev/null; then
+                7z x -y -o"$CHALLENGE_DIR" "$COPIED_ARCHIVE" >/dev/null
+            elif command -v bsdtar &>/dev/null; then
+                bsdtar -xf "$COPIED_ARCHIVE" -C "$CHALLENGE_DIR"
+            else
+                echo "Error: No utility found to unzip ${COPIED_ARCHIVE}" >&2
+                EXTRACTION_SUCCESS=false
+            fi
+            ;;
+        *.7z)
+            if command -v 7z &>/dev/null; then
+                7z x -y -o"$CHALLENGE_DIR" "$COPIED_ARCHIVE" >/dev/null
+            elif command -v 7za &>/dev/null; then
+                7za x -y -o"$CHALLENGE_DIR" "$COPIED_ARCHIVE" >/dev/null
+            else
+                echo "Error: '7z' or '7za' required to extract .7z archive" >&2
+                EXTRACTION_SUCCESS=false
+            fi
+            ;;
+        *.tar.gz|*.tgz|*.tar.bz2|*.tbz2|*.tar.xz|*.txz|*.tar)
+            tar -xf "$COPIED_ARCHIVE" -C "$CHALLENGE_DIR" || EXTRACTION_SUCCESS=false
+            ;;
+        *.gz)
+            if command -v 7z &>/dev/null; then
+                7z x -y -o"$CHALLENGE_DIR" "$COPIED_ARCHIVE" >/dev/null
+            else
+                gzip -dc "$COPIED_ARCHIVE" > "${CHALLENGE_DIR}/${ARCHIVE_NAME%.*}" || EXTRACTION_SUCCESS=false
+            fi
+            ;;
+        *)
+            if command -v 7z &>/dev/null && 7z t "$COPIED_ARCHIVE" &>/dev/null; then
+                7z x -y -o"$CHALLENGE_DIR" "$COPIED_ARCHIVE" >/dev/null
+            elif command -v bsdtar &>/dev/null; then
+                bsdtar -xf "$COPIED_ARCHIVE" -C "$CHALLENGE_DIR"
+            elif command -v unzip &>/dev/null && unzip -tq "$COPIED_ARCHIVE" &>/dev/null; then
+                unzip -q -o "$COPIED_ARCHIVE" -d "$CHALLENGE_DIR"
+            else
+                echo "Warning: Unrecognized archive format. Copied to src/ but not extracted." >&2
+            fi
+            ;;
+    esac
+
+    # Handle deletion of original compressed archive
+    if [[ "$EXTRACTION_SUCCESS" == true ]]; then
+        if [[ "$KEEP_ARCHIVE" == false ]]; then
+            if [[ "$ARCHIVE_PATH" != "$COPIED_ARCHIVE" ]]; then
+                echo "Deleting original archive: ${ARCHIVE_PATH}"
+                rm -f "$ARCHIVE_PATH"
+            fi
+        else
+            echo "Kept original archive: ${ARCHIVE_PATH}"
+        fi
+    fi
+fi
+
+echo "Created CTF workspace successfully at: ${TARGET_DIR}"
+echo "Structure:"
+echo "  ├── challenge/"
+echo "  ├── flag.txt"
+echo "  ├── src/"
+echo "  └── writeup/"
+echo "      ├── assets/"
+echo "      │   └── images/"
+echo "      └── readme.md"
+
+# Launch VSCodium if requested
+if [[ "$LAUNCH_VS" == true ]]; then
+    if command -v codium &>/dev/null; then
+        echo "Opening workspace in VSCodium..."
+        codium "$TARGET_DIR"
+    elif command -v code &>/dev/null; then
+        echo "Opening workspace in VS Code..."
+        code "$TARGET_DIR"
+    else
+        echo "Warning: Neither 'codium' nor 'code' executable was found in PATH." >&2
+    fi
+fi
