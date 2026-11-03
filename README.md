@@ -23,7 +23,7 @@ When initialized, `ctf-dir` creates the following clean hierarchy:
 ```
 
 The generated `writeup/readme.md` is automatically initialized with standard metadata fields:
-```markdown
+````markdown
 # <challenge-name>
 
 ## Overview
@@ -41,7 +41,7 @@ The generated `writeup/readme.md` is automatically initialized with standard met
 ```
 flag{}
 ```
-```
+````
 
 ---
 
