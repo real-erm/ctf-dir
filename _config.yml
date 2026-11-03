@@ -1,0 +1,4 @@
+theme: jekyll-theme-cayman
+title: ctf-dir
+description: A tool to quickly hop on CTF with an organized workspace, built around my personal set-up.
+show_downloads: true
